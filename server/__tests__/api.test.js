@@ -1,27 +1,17 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
-import nock from 'nock';
+
+// vi.mock is hoisted before imports, so both modules are mocked before
+// index.js loads — dotenv becomes a no-op and axios.get becomes a spy.
+vi.mock('dotenv', () => ({ default: { config: vi.fn() } }));
+vi.mock('axios', () => ({ default: { get: vi.fn() } }));
+
+import axios from 'axios';
 import { app } from '../index.js';
 
-const STEAM = 'https://api.steampowered.com';
-
-// Block real outbound HTTP but allow 127.0.0.1 so supertest can reach Express
-beforeAll(() => {
-  nock.disableNetConnect();
-  nock.enableNetConnect('127.0.0.1');
-});
-
-afterAll(() => {
-  nock.cleanAll();
-  nock.enableNetConnect();
-});
-
 beforeEach(() => {
+  vi.clearAllMocks();
   process.env.STEAM_API_KEY = 'test-key-123';
-});
-
-afterEach(() => {
-  nock.cleanAll();
 });
 
 // ─── /api/health ─────────────────────────────────────────────────────────────
@@ -45,32 +35,31 @@ describe('GET /api/health', () => {
 
 describe('GET /api/resolve/:vanity', () => {
   it('resolves a vanity URL and returns Steam data', async () => {
-    nock(STEAM)
-      .get('/ISteamUser/ResolveVanityURL/v1/')
-      .query(true)
-      .reply(200, { response: { steamid: '76561198028291995', success: 1 } });
+    axios.get.mockResolvedValue({
+      data: { response: { steamid: '76561198028291995', success: 1 } },
+    });
 
     const res = await request(app).get('/api/resolve/gaben');
     expect(res.status).toBe(200);
     expect(res.body.response.steamid).toBe('76561198028291995');
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('ResolveVanityURL'),
+      expect.objectContaining({ params: expect.objectContaining({ vanityurl: 'gaben' }) })
+    );
   });
 
   it('returns 503 when API key is missing', async () => {
     process.env.STEAM_API_KEY = '';
     const res = await request(app).get('/api/resolve/gaben');
     expect(res.status).toBe(503);
-    expect(nock.pendingMocks()).toHaveLength(0); // no upstream call was made
+    expect(axios.get).not.toHaveBeenCalled();
   });
 
   it('returns 500 when Steam API throws', async () => {
-    nock(STEAM)
-      .get('/ISteamUser/ResolveVanityURL/v1/')
-      .query(true)
-      .replyWithError('Steam is down');
-
+    axios.get.mockRejectedValue(new Error('Steam is down'));
     const res = await request(app).get('/api/resolve/gaben');
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/Steam is down/);
+    expect(res.body.error).toBe('Steam is down');
   });
 });
 
@@ -78,31 +67,33 @@ describe('GET /api/resolve/:vanity', () => {
 
 describe('GET /api/player/:steamId/summary', () => {
   it('proxies the Steam player summary', async () => {
-    nock(STEAM)
-      .get('/ISteamUser/GetPlayerSummaries/v2/')
-      .query(true)
-      .reply(200, { response: { players: [{ personaname: 'TestPlayer', steamid: '76561198189486707' }] } });
+    axios.get.mockResolvedValue({
+      data: { response: { players: [{ personaname: 'TestPlayer', steamid: '76561198189486707' }] } },
+    });
 
     const res = await request(app).get('/api/player/76561198189486707/summary');
     expect(res.status).toBe(200);
     expect(res.body.response.players[0].personaname).toBe('TestPlayer');
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('GetPlayerSummaries'),
+      expect.objectContaining({
+        params: expect.objectContaining({ steamids: '76561198189486707' }),
+      })
+    );
   });
 
   it('returns 503 when API key is missing', async () => {
     process.env.STEAM_API_KEY = '';
     const res = await request(app).get('/api/player/123/summary');
     expect(res.status).toBe(503);
+    expect(axios.get).not.toHaveBeenCalled();
   });
 
   it('returns 500 on upstream error', async () => {
-    nock(STEAM)
-      .get('/ISteamUser/GetPlayerSummaries/v2/')
-      .query(true)
-      .replyWithError('timeout');
-
+    axios.get.mockRejectedValue(new Error('timeout'));
     const res = await request(app).get('/api/player/123/summary');
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/timeout/);
+    expect(res.body.error).toBe('timeout');
   });
 });
 
@@ -110,41 +101,51 @@ describe('GET /api/player/:steamId/summary', () => {
 
 describe('GET /api/player/:steamId/recent', () => {
   it('returns recently played games', async () => {
-    nock(STEAM)
-      .get('/IPlayerService/GetRecentlyPlayedGames/v1/')
-      .query(true)
-      .reply(200, { response: { games: [{ appid: 730, name: 'CS2', playtime_forever: 100 }] } });
+    axios.get.mockResolvedValue({
+      data: { response: { games: [{ appid: 730, name: 'CS2', playtime_forever: 100 }] } },
+    });
 
     const res = await request(app).get('/api/player/123/recent');
     expect(res.status).toBe(200);
     expect(res.body.response.games).toHaveLength(1);
     expect(res.body.response.games[0].name).toBe('CS2');
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('GetRecentlyPlayedGames'),
+      expect.objectContaining({ params: expect.objectContaining({ count: 10 }) })
+    );
   });
 
   it('returns 503 when API key is missing', async () => {
     process.env.STEAM_API_KEY = '';
     const res = await request(app).get('/api/player/123/recent');
     expect(res.status).toBe(503);
+    expect(axios.get).not.toHaveBeenCalled();
   });
 });
 
 // ─── /api/player/:steamId/games ──────────────────────────────────────────────
 
 describe('GET /api/player/:steamId/games', () => {
-  it('returns owned games list', async () => {
-    nock(STEAM)
-      .get('/IPlayerService/GetOwnedGames/v1/')
-      .query(true)
-      .reply(200, { response: { game_count: 2, games: [{ appid: 730 }, { appid: 570 }] } });
+  it('returns owned games with appinfo flags', async () => {
+    axios.get.mockResolvedValue({
+      data: { response: { game_count: 2, games: [{ appid: 730 }, { appid: 570 }] } },
+    });
 
     const res = await request(app).get('/api/player/123/games');
     expect(res.status).toBe(200);
     expect(res.body.response.game_count).toBe(2);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('GetOwnedGames'),
+      expect.objectContaining({
+        params: expect.objectContaining({ include_appinfo: 1, include_played_free_games: 1 }),
+      })
+    );
   });
 
   it('returns 503 when API key is missing', async () => {
     process.env.STEAM_API_KEY = '';
     const res = await request(app).get('/api/player/123/games');
     expect(res.status).toBe(503);
+    expect(axios.get).not.toHaveBeenCalled();
   });
 });

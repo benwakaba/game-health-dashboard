@@ -1,8 +1,13 @@
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
+import express from 'express';
+import cors from 'cors';
+import axios from 'axios';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: join(__dirname, '../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -87,10 +92,10 @@ app.get('/api/health', (_, res) =>
 );
 
 // Only bind the port when run directly, not when imported by tests
-if (require.main === module) {
+if (process.argv[1] === __filename) {
   app.listen(PORT, () =>
     console.log(`🎮 Game Health Dashboard API → http://localhost:${PORT}`)
   );
 }
 
-module.exports = { app };
+export { app };
